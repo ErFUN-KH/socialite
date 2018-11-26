@@ -3,6 +3,7 @@
 namespace Laravel\Socialite\One;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use League\OAuth1\Client\Server\Server;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -25,6 +26,13 @@ abstract class AbstractProvider implements ProviderContract
     protected $server;
 
     /**
+     * Indicates if the session state should be utilized.
+     *
+     * @var bool
+     */
+    protected $stateless = false;
+
+    /**
      * Create a new provider instance.
      *
      * @param  Request  $request
@@ -44,11 +52,29 @@ abstract class AbstractProvider implements ProviderContract
      */
     public function redirect()
     {
-        $this->request->getSession()->put(
-            'oauth.temp', $temp = $this->server->getTemporaryCredentials()
-        );
-
-        return new RedirectResponse($this->server->getAuthorizationUrl($temp));
+        $state = null;
+        if ($this->usesState()) {
+            $this->request->session()->put(
+                'oauth.temp', $temp = $this->server->getTemporaryCredentials()
+            );
+            return new RedirectResponse($this->server->getAuthorizationUrl($temp));
+        } else {
+            // Generate a temporary identifier for this user
+            $tempId = str_random(40);
+            // Add encrypted credentials to configured callback URL
+            $callback = $this->server->getClientCredentials()->getCallbackUri();
+            $this->server->getClientCredentials()->setCallbackUri(
+                $callback.(strpos($callback, '?') !== false ? '&' : '?').http_build_query([
+                    'tempId' => $tempId,
+                ])
+            );
+            // Get the temporary credentials
+            $temp = $this->server->getTemporaryCredentials();
+            // Cache the credentials against the temporary identifier
+            $this->app('cache')->put($this->getTempIdCacheKey($tempId), $temp, 1);
+            // Redirect the user
+            return new RedirectResponse($this->server->getAuthorizationUrl($temp));
+        }
     }
 
     /**
@@ -82,6 +108,10 @@ abstract class AbstractProvider implements ProviderContract
     {
         $temp = $this->request->getSession()->get('oauth.temp');
 
+        if (empty($temp)) {
+            $temp = $this->app('cache')->get($this->getTempIdCacheKey($this->request->input('tempId')));
+        }
+
         return $this->server->getTokenCredentials(
             $temp, $this->request->get('oauth_token'), $this->request->get('oauth_verifier')
         );
@@ -108,5 +138,57 @@ abstract class AbstractProvider implements ProviderContract
         $this->request = $request;
 
         return $this;
+    }
+
+    /**
+     * Determine if the provider is operating with state.
+     *
+     * @return bool
+     */
+    protected function usesState()
+    {
+        return ! $this->stateless;
+    }
+
+    /**
+     * Determine if the provider is operating as stateless.
+     *
+     * @return bool
+     */
+    protected function isStateless()
+    {
+        return $this->stateless;
+    }
+
+    /**
+     * Indicates that the provider should operate as stateless.
+     *
+     * @return $this
+     */
+    public function stateless()
+    {
+        $this->stateless = true;
+        return $this;
+    }
+
+    /**
+     * Get the string used for session state.
+     *
+     * @return string
+     */
+    protected function getState()
+    {
+        return Str::random(40);
+    }
+
+    /**
+     * Get a cache key for temporary credentials.
+     *
+     * @param string $tempId
+     * @return string
+     */
+    protected function getTempIdCacheKey($tempId)
+    {
+        return 'twitter-sign-in-temp:'.$tempId;
     }
 }
