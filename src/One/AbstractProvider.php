@@ -71,7 +71,7 @@ abstract class AbstractProvider implements ProviderContract
             // Get the temporary credentials
             $temp = $this->server->getTemporaryCredentials();
             // Cache the credentials against the temporary identifier
-            $this->app('cache')->put($this->getTempIdCacheKey($tempId), $temp, 1);
+            app('cache')->put($this->getTempIdCacheKey($tempId), $temp, 1);
             // Redirect the user
             return new RedirectResponse($this->server->getAuthorizationUrl($temp));
         }
@@ -109,7 +109,7 @@ abstract class AbstractProvider implements ProviderContract
         $temp = $this->request->getSession()->get('oauth.temp');
 
         if (empty($temp)) {
-            $temp = $this->app('cache')->get($this->getTempIdCacheKey($this->request->input('tempId')));
+            $temp = app('cache')->get($this->getTempIdCacheKey($this->request->input('tempId')));
         }
 
         return $this->server->getTokenCredentials(
