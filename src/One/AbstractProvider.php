@@ -2,11 +2,12 @@
 
 namespace Laravel\Socialite\One;
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Http\Request;
 use InvalidArgumentException;
+use Illuminate\Http\RedirectResponse;
 use League\OAuth1\Client\Server\Server;
-use Symfony\Component\HttpFoundation\RedirectResponse;
+use League\OAuth1\Client\Credentials\TokenCredentials;
 use Laravel\Socialite\Contracts\Provider as ProviderContract;
 
 abstract class AbstractProvider implements ProviderContract
@@ -14,16 +15,23 @@ abstract class AbstractProvider implements ProviderContract
     /**
      * The HTTP request instance.
      *
-     * @var Request
+     * @var \Illuminate\Http\Request
      */
     protected $request;
 
     /**
      * The OAuth server implementation.
      *
-     * @var Server
+     * @var \League\OAuth1\Client\Server\Server
      */
     protected $server;
+
+    /**
+     * A hash representing the last requested user.
+     *
+     * @var string
+     */
+    protected $userHash;
 
     /**
      * Indicates if the session state should be utilized.
@@ -35,8 +43,8 @@ abstract class AbstractProvider implements ProviderContract
     /**
      * Create a new provider instance.
      *
-     * @param  Request  $request
-     * @param  Server  $server
+     * @param  \Illuminate\Http\Request $request
+     * @param  \League\OAuth1\Client\Server\Server $server
      * @return void
      */
     public function __construct(Request $request, Server $server)
@@ -48,7 +56,7 @@ abstract class AbstractProvider implements ProviderContract
     /**
      * Redirect the user to the authentication page for the provider.
      *
-     * @return RedirectResponse
+     * @return \Illuminate\Http\RedirectResponse
      */
     public function redirect()
     {
@@ -64,7 +72,7 @@ abstract class AbstractProvider implements ProviderContract
             // Add encrypted credentials to configured callback URL
             $callback = $this->server->getClientCredentials()->getCallbackUri();
             $this->server->getClientCredentials()->setCallbackUri(
-                $callback.(strpos($callback, '?') !== false ? '&' : '?').http_build_query([
+                $callback . (strpos($callback, '?') !== false ? '&' : '?') . http_build_query([
                     'tempId' => $tempId,
                 ])
             );
@@ -80,22 +88,60 @@ abstract class AbstractProvider implements ProviderContract
     /**
      * Get the User instance for the authenticated user.
      *
+     * @throws \InvalidArgumentException
      * @return \Laravel\Socialite\One\User
      */
     public function user()
     {
-        if (! $this->hasNecessaryVerifier()) {
+        if (!$this->hasNecessaryVerifier()) {
             throw new InvalidArgumentException('Invalid request. Missing OAuth verifier.');
         }
 
-        $user = $this->server->getUserDetails($token = $this->getToken());
+        $token = $this->getToken();
+
+        $user = $this->server->getUserDetails(
+            $token, $this->shouldBypassCache($token->getIdentifier(), $token->getSecret())
+        );
 
         $instance = (new User)->setRaw($user->extra)
-                ->setToken($token->getIdentifier(), $token->getSecret());
+            ->setToken($token->getIdentifier(), $token->getSecret());
 
         return $instance->map([
-            'id' => $user->uid, 'nickname' => $user->nickname,
-            'name' => $user->name, 'email' => $user->email, 'avatar' => $user->imageUrl,
+            'id'       => $user->uid,
+            'nickname' => $user->nickname,
+            'name'     => $user->name,
+            'email'    => $user->email,
+            'avatar'   => $user->imageUrl,
+        ]);
+    }
+
+    /**
+     * Get a Social User instance from a known access token and secret.
+     *
+     * @param  string $token
+     * @param  string $secret
+     * @return \Laravel\Socialite\One\User
+     */
+    public function userFromTokenAndSecret($token, $secret)
+    {
+        $tokenCredentials = new TokenCredentials();
+
+        $tokenCredentials->setIdentifier($token);
+        $tokenCredentials->setSecret($secret);
+
+        $user = $this->server->getUserDetails(
+            $tokenCredentials, $this->shouldBypassCache($token, $secret)
+        );
+
+        $instance = (new User)->setRaw($user->extra)
+            ->setToken($tokenCredentials->getIdentifier(), $tokenCredentials->getSecret());
+
+        return $instance->map([
+            'id'       => $user->uid,
+            'nickname' => $user->nickname,
+            'name'     => $user->name,
+            'email'    => $user->email,
+            'avatar'   => $user->imageUrl,
         ]);
     }
 
@@ -129,9 +175,31 @@ abstract class AbstractProvider implements ProviderContract
     }
 
     /**
+     * Determine if the user information cache should be bypassed.
+     *
+     * @param  string $token
+     * @param  string $secret
+     * @return bool
+     */
+    protected function shouldBypassCache($token, $secret)
+    {
+        $newHash = sha1($token . '_' . $secret);
+
+        if (!empty($this->userHash) && $newHash !== $this->userHash) {
+            $this->userHash = $newHash;
+
+            return true;
+        }
+
+        $this->userHash = $this->userHash ?: $newHash;
+
+        return false;
+    }
+
+    /**
      * Set the request instance.
      *
-     * @param  Request  $request
+     * @param  \Illuminate\Http\Request $request
      * @return $this
      */
     public function setRequest(Request $request)
@@ -148,7 +216,7 @@ abstract class AbstractProvider implements ProviderContract
      */
     protected function usesState()
     {
-        return ! $this->stateless;
+        return !$this->stateless;
     }
 
     /**
@@ -169,6 +237,7 @@ abstract class AbstractProvider implements ProviderContract
     public function stateless()
     {
         $this->stateless = true;
+
         return $this;
     }
 
@@ -190,6 +259,6 @@ abstract class AbstractProvider implements ProviderContract
      */
     protected function getTempIdCacheKey($tempId)
     {
-        return 'twitter-sign-in-temp:'.$tempId;
+        return 'twitter-sign-in-temp:' . $tempId;
     }
 }
