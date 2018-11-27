@@ -106,10 +106,11 @@ abstract class AbstractProvider implements ProviderContract
      */
     protected function getToken()
     {
-        $temp = $this->request->getSession()->get('oauth.temp');
-
-        if (empty($temp)) {
+        if ($this->usesState()) {
+            $temp = $this->request->getSession()->get('oauth.temp');
+        } else {
             $temp = app('cache')->get($this->getTempIdCacheKey($this->request->input('tempId')));
+            app('cache')->forget($this->getTempIdCacheKey($this->request->input('tempId')));
         }
 
         return $this->server->getTokenCredentials(
